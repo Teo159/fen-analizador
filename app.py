@@ -122,6 +122,84 @@ def events(s, threshold, duration):
                 seg=s.loc[start:end]; rows.append({"Señal":label,"Inicio":start.strftime('%Y-%m'),"Fin":end.strftime('%Y-%m'),"Meses":dur,"Extremo":float(seg.max() if sign==1 else seg.min())})
     return pd.DataFrame(rows)
 
+
+# ---------------- INTERPRETACION FISICA ----------------
+def recent_run(s, condition, min_months=3):
+    x=s.dropna().sort_index()
+    if x.empty: return 0
+    flags=condition(x)
+    best=cur=0
+    for v in flags.tolist():
+        cur=cur+1 if bool(v) else 0
+        best=max(best,cur)
+    return best
+
+def sign_label(value, neutral=0.25):
+    if pd.isna(value): return "Sin dato"
+    if value > neutral: return "positivo"
+    if value < -neutral: return "negativo"
+    return "cercano a cero"
+
+def physical_card(index, value, persistence=3):
+    if pd.isna(value):
+        return ("Sin dato", "No hay un valor disponible para interpretar este índice.", "neutral")
+    if index == "E":
+        if value > 0.25:
+            return ("Señal cálida oriental", "E positivo indica una señal positiva en el componente asociado principalmente con el Pacífico ecuatorial oriental y la costa del Perú. En Takahashi et al. (2011), E está fuertemente relacionado con Niño 1+2 y representa el régimen de calentamiento oriental extremo.", "warm")
+        if value < -0.25:
+            return ("Señal fría oriental", "E negativo indica una señal negativa en el componente asociado principalmente con el Pacífico ecuatorial oriental. Su interpretación debe hacerse junto con C, MEI y SOI.", "cold")
+        return ("Señal oriental débil", "E está próximo a cero; no se observa una señal oriental marcada en este mes.", "neutral")
+    if index == "C":
+        if value > 0.25:
+            return ("Señal cálida central", "C positivo indica una señal positiva del componente asociado principalmente con el Pacífico ecuatorial central. En el enfoque E/C, C está muy relacionado con Niño 4 y describe buena parte de la variabilidad de los eventos centrales y de los eventos cálidos moderados.", "warm")
+        if value < -0.25:
+            return ("Señal fría central", "C negativo indica una señal negativa del componente central. El enfoque E/C utiliza C para representar buena parte de la variabilidad de La Niña y de las condiciones frías del Pacífico central.", "cold")
+        return ("Señal central débil", "C está próximo a cero; no se observa una señal central marcada en este mes.", "neutral")
+    if index == "MEI":
+        if value > 0.5:
+            return ("Estado cálido océano-atmósfera", "MEI positivo indica una configuración compatible con condiciones cálidas de ENSO. MEI.v2 integra SST, presión a nivel del mar, vientos superficiales y OLR, por lo que resume el estado acoplado océano-atmósfera.", "warm")
+        if value < -0.5:
+            return ("Estado frío océano-atmósfera", "MEI negativo indica una configuración compatible con condiciones frías de ENSO. La interpretación gana fuerza cuando la señal persiste y es coherente con otros índices.", "cold")
+        return ("Estado cercano a neutral", "MEI está próximo a su zona central; no muestra por sí solo una señal cálida o fría marcada.", "neutral")
+    if index == "SOI":
+        if value < -0.5:
+            return ("Señal atmosférica tipo El Niño", "SOI negativo indica una configuración de presión asociada típicamente con El Niño: presión relativamente menor en Tahití y mayor en Darwin. NOAA señala que valores negativos persistentes suelen coincidir con aguas anormalmente cálidas en el Pacífico oriental.", "warm")
+        if value > 0.5:
+            return ("Señal atmosférica tipo La Niña", "SOI positivo indica una configuración atmosférica asociada típicamente con La Niña. NOAA señala que valores positivos persistentes suelen coincidir con aguas anormalmente frías en el Pacífico oriental.", "cold")
+        return ("Señal atmosférica débil", "SOI está próximo a cero; la señal de la Oscilación del Sur es débil en este mes.", "neutral")
+    if index == "PDO":
+        if value > 0.5:
+            return ("PDO positivo", "El PDO está en fase positiva. Representa un patrón de variabilidad de la temperatura superficial del Pacífico Norte; es un contexto complementario y no una clasificación directa de El Niño o La Niña.", "warm")
+        if value < -0.5:
+            return ("PDO negativo", "El PDO está en fase negativa. Representa el patrón opuesto del PDO; debe interpretarse como variabilidad del Pacífico Norte y no como un diagnóstico independiente de ENSO.", "cold")
+        return ("PDO cercano a neutral", "El PDO está próximo a cero durante este mes.", "neutral")
+    return ("Sin interpretación", "", "neutral")
+
+def joint_diagnosis(row):
+    vals={k: row.get(k, np.nan) for k in ["C","E","MEI","PDO","SOI"]}
+    warm=0; cold=0; evidence=[]
+    if not pd.isna(vals["E"]):
+        if vals["E"]>0.5: warm+=1; evidence.append("E positivo")
+        elif vals["E"]<-0.5: cold+=1; evidence.append("E negativo")
+    if not pd.isna(vals["C"]):
+        if vals["C"]>0.5: warm+=1; evidence.append("C positivo")
+        elif vals["C"]<-0.5: cold+=1; evidence.append("C negativo")
+    if not pd.isna(vals["MEI"]):
+        if vals["MEI"]>0.5: warm+=1; evidence.append("MEI positivo")
+        elif vals["MEI"]<-0.5: cold+=1; evidence.append("MEI negativo")
+    if not pd.isna(vals["SOI"]):
+        if vals["SOI"]<-0.5: warm+=1; evidence.append("SOI negativo")
+        elif vals["SOI"]>0.5: cold+=1; evidence.append("SOI positivo")
+    if warm>=3 and warm>cold:
+        title="Configuración conjunta compatible con fase cálida de ENSO"; text="Varios índices oceánicos y atmosféricos muestran señales coherentes con un estado cálido. Esto describe el estado del sistema océano-atmósfera y no constituye por sí solo una clasificación oficial del FEN."
+    elif cold>=3 and cold>warm:
+        title="Configuración conjunta compatible con fase fría de ENSO"; text="Varios índices muestran señales coherentes con un estado frío. Esto describe el estado del sistema océano-atmósfera y no constituye por sí solo una clasificación oficial del FEN."
+    elif warm>=2 and cold>=2:
+        title="Señal mixta o transición"; text="Los índices no son completamente coherentes entre sí. Puede existir una transición, una evolución espacial diferente entre Pacífico central y oriental o mayor variabilidad atmosférica. Conviene revisar la serie de varios meses."
+    else:
+        title="Estado sin señal conjunta fuerte"; text="Los índices disponibles no muestran una configuración cálida o fría suficientemente coherente con las reglas exploratorias de esta pantalla."
+    return title,text,evidence
+
 # Sidebar
 st.sidebar.markdown("# 🌎 FEN Analizador")
 st.sidebar.caption("Versión 3.0 · análisis climático e índices ENSO/FEN")
@@ -253,23 +331,77 @@ with pages[6]:
 
 # INTERPRETATION
 with pages[7]:
-    st.markdown('<div class="section">Interpretación didáctica</div>',unsafe_allow_html=True)
-    n=st.selectbox("Índice",indices,index=indices.index("MEI") if "MEI" in indices else 0,key="int_index")
-    s=data[n].dropna(); th=st.number_input("Umbral de apoyo",value=float(THRESHOLDS[n]),min_value=0.0,step=.1,key="int_th")
-    pos=int((s>=th).sum()); neg=int((s<=-th).sum())
-    st.markdown(f'<div class="note-box"><b>{DISPLAY[n]}:</b> {DESCRIPTIONS[n]}<br><br>En el archivo cargado hay <b>{pos}</b> meses ≥ +{th:.2f} y <b>{neg}</b> meses ≤ −{th:.2f}. Esto es una descripción estadística; por sí sola no constituye una clasificación oficial de El Niño, La Niña o FEN.</div>',unsafe_allow_html=True)
-    st.markdown('<div class="section">Lectura recomendada</div>',unsafe_allow_html=True)
-    st.write("1. Verifica la fuente, versión y periodo del índice.\n2. Observa la serie y su persistencia.\n3. Compara con otros índices sin asumir equivalencia física.\n4. Evalúa rezagos y correlaciones con cautela.\n5. Contrasta cualquier clasificación de ENSO/FEN con la metodología oficial usada en tu investigación.")
+    st.markdown('<div class="section">🧠 Interpretación física del estado climático</div>',unsafe_allow_html=True)
+    st.markdown('<div class="note-box"><b>Objetivo:</b> transformar los valores de C, E, MEI, PDO y SOI en una lectura física basada en la literatura científica. La aplicación describe señales compatibles; no pronostica lluvias, tormentas ni declara por sí sola un evento oficial de El Niño/La Niña.</div>',unsafe_allow_html=True)
+
+    valid_dates=data.dropna(how="all").index
+    if len(valid_dates):
+        selected_date=st.selectbox("Selecciona un mes para interpretar", list(valid_dates[::-1]), format_func=lambda d:d.strftime("%B %Y"), key="physical_date")
+        row=data.loc[selected_date]
+        title,text,evidence=joint_diagnosis(row)
+        st.markdown(f'### 🌎 {selected_date:%B %Y} — {title}')
+        st.write(text)
+        if evidence: st.caption("Señales que contribuyen al diagnóstico exploratorio: " + " · ".join(evidence))
+
+        cols=st.columns(len(indices))
+        for col,n in zip(cols,indices):
+            value=row.get(n,np.nan)
+            label,desc,kind=physical_card(n,value)
+            col.metric(DISPLAY[n], "—" if pd.isna(value) else f"{value:.2f}")
+            col.markdown(f"**{label}**")
+            col.caption(desc)
+
+        st.markdown('<div class="section">🔄 ¿Cómo está evolucionando la señal?</div>',unsafe_allow_html=True)
+        lookback=st.slider("Meses anteriores a considerar",3,18,6,key="physical_lookback")
+        hist=data.loc[:selected_date].tail(lookback)
+        zcols=[x for x in ["C","E","MEI","SOI","PDO"] if x in hist.columns]
+        if len(hist)>1:
+            fig,ax=plt.subplots(figsize=(14,5))
+            for n in zcols: ax.plot(hist.index,standardize(hist[n]),marker="o",markersize=3,label=n)
+            ax.axhline(0,linewidth=.8); ax.set_ylabel("Posición relativa (z-score)"); ax.set_xlabel("Fecha"); ax.grid(alpha=.18); ax.legend(ncol=len(zcols)); ax.set_title("Evolución reciente de las señales")
+            st.pyplot(fig,width="stretch")
+            st.caption("El z-score solo se utiliza aquí para comparar la evolución temporal entre índices de escalas distintas. La interpretación física se realiza con el significado específico de cada índice.")
+
+        if "C" in data.columns and "E" in data.columns:
+            st.markdown('<div class="section">🌊 Espacio C–E: Pacífico central vs. oriental</div>',unsafe_allow_html=True)
+            ce=data[["C","E"]].dropna()
+            if len(ce):
+                fig,ax=plt.subplots(figsize=(8,6)); ax.scatter(ce["C"],ce["E"],s=12,alpha=.28); ax.scatter([row.get("C",np.nan)],[row.get("E",np.nan)],s=90,marker="*",label="Mes seleccionado")
+                ax.axhline(0,linewidth=.8); ax.axvline(0,linewidth=.8); ax.set_xlabel("C · señal del Pacífico central"); ax.set_ylabel("E · señal del Pacífico oriental"); ax.set_title("Relación C–E"); ax.grid(alpha=.18); ax.legend(); st.pyplot(fig,width="stretch")
+                st.info("En el marco de Takahashi et al. (2011), C está fuertemente relacionado con Niño 4 y E con Niño 1+2. La trayectoria mensual C–E permite estudiar cómo cambia la distribución espacial de la señal ENSO. No se debe interpretar cada cuadrante como una categoría oficial automática.")
+
+        st.markdown('<div class="section">🌧️ ¿Qué podemos y qué no podemos inferir?</div>',unsafe_allow_html=True)
+        a,b=st.columns(2)
+        with a:
+            st.markdown("**Con estos cinco índices sí podemos estudiar:**")
+            st.markdown("- calentamiento/enfriamiento relativo en las regiones representadas por C y E;\n- estado combinado océano-atmósfera mediante MEI y SOI;\n- señales cálidas, frías, mixtas o de transición;\n- persistencia y evolución temporal;\n- diferencias entre una señal más oriental o más central;\n- contexto adicional del PDO.")
+        with b:
+            st.markdown("**Todavía no podemos confirmar directamente:**")
+            st.markdown("- cantidad de precipitación en Huancavelica u otra estación;\n- ocurrencia de tormentas en una localidad;\n- caudales o inundaciones;\n- sequía local;\n- impacto hidrológico específico.\n\nPara eso posteriormente habría que incorporar datos meteorológicos e hidrológicos.")
+
+        st.markdown('<div class="section">📚 Base científica utilizada</div>',unsafe_allow_html=True)
+        st.markdown("- **Takahashi et al. (2011):** definición e interpretación de los índices E y C y su relación con la diversidad de ENSO. ")
+        st.markdown("- **NOAA PSL — MEI.v2:** MEI combina SST, presión, vientos y OLR para representar el estado acoplado océano-atmósfera. ")
+        st.markdown("- **NOAA CPC — SOI:** SOI representa la componente atmosférica de la Oscilación del Sur y su persistencia ayuda a caracterizar las fases de ENSO. ")
+        st.markdown("- **NOAA PSL — PDO:** PDO representa un patrón de variabilidad de la SST del Pacífico Norte y debe utilizarse como contexto complementario.")
+        st.caption("Fuentes: Takahashi et al. (2011), DOI 10.1029/2011GL047364; NOAA Physical Sciences Laboratory; NOAA Climate Prediction Center.")
+    else:
+        st.info("No hay fechas disponibles para interpretar.")
 
 # METHODOLOGY
 with pages[8]:
-    st.markdown('<div class="section">Metodología, definiciones y alcance</div>',unsafe_allow_html=True)
-    st.markdown("**C y E:** componentes utilizados para describir regímenes espaciales de ENSO en el enfoque E/C. La definición exacta debe corresponder a la fuente de los datos cargados.")
-    st.markdown("**MEI v2:** índice multivariado que resume información oceánica y atmosférica del Pacífico tropical.")
-    st.markdown("**SOI:** indicador de la Oscilación del Sur basado en presión atmosférica entre Tahití y Darwin; la interpretación del signo debe considerar persistencia y la metodología empleada.")
-    st.markdown("**PDO:** patrón de variabilidad del Pacífico Norte; se presenta separadamente de una clasificación directa de ENSO.")
-    st.markdown("**FEN en Perú:** para conclusiones oficiales o académicas debe contrastarse con los índices y criterios definidos por la metodología de la investigación y las instituciones competentes.")
-    st.markdown('<div class="note-box"><b>Alcance:</b> esta aplicación es una herramienta de análisis exploratorio. Los umbrales de los módulos gráficos/eventos son configurables y no deben presentarse como criterios oficiales sin documentar la fuente correspondiente.</div>',unsafe_allow_html=True)
+    st.markdown('<div class="section">📚 Metodología, definiciones y alcance</div>',unsafe_allow_html=True)
+    st.markdown("**C y E:** Takahashi et al. (2011) construyen ambos índices a partir de los dos primeros modos EOF de las anomalías de SST tropical del Pacífico. E se relaciona fuertemente con Niño 1+2 y representa el componente oriental; C se relaciona fuertemente con Niño 4 y representa el componente central. Los signos y valores del archivo se interpretan como índices, no como grados Celsius directos.")
+    st.markdown("**MEI.v2:** NOAA PSL lo construye con SST, presión a nivel del mar, componentes zonal y meridional del viento superficial y OLR. Su finalidad es resumir el estado combinado océano-atmósfera de ENSO.")
+    st.markdown("**SOI:** NOAA CPC lo define a partir de la diferencia de presión estandarizada entre Tahití y Darwin. Los valores negativos persistentes suelen acompañar El Niño y los positivos persistentes La Niña.")
+    st.markdown("**PDO:** NOAA PSL lo define como un patrón de variabilidad de SST del Pacífico Norte. Es de uso complementario y no debe utilizarse por sí solo para declarar una fase ENSO.")
+    st.markdown("**Diagnóstico conjunto:** la pantalla de interpretación utiliza reglas transparentes y exploratorias para detectar coherencia entre índices. Estas reglas sirven para lectura y visualización, no sustituyen criterios oficiales de monitoreo o clasificación.")
+    st.markdown('<div class="note-box"><b>Alcance:</b> esta plataforma interpreta el estado climático representado por los índices disponibles. No convierte automáticamente una señal de índice en una predicción local de lluvia, tormentas, inundaciones o sequía. Para estudiar impactos locales será necesario incorporar posteriormente precipitación, temperatura, caudal u otras variables.</div>',unsafe_allow_html=True)
+    st.markdown("### Referencias principales")
+    st.markdown("Takahashi, K., Montecinos, A., Goubanova, K., & Dewitte, B. (2011). *ENSO regimes: Reinterpreting the canonical and Modoki El Niño*. Geophysical Research Letters, 38, L10704. DOI: 10.1029/2011GL047364.")
+    st.markdown("NOAA Physical Sciences Laboratory. *Multivariate ENSO Index Version 2 (MEI.v2)*.")
+    st.markdown("NOAA Climate Prediction Center. *Southern Oscillation Index (SOI)*.")
+    st.markdown("NOAA Physical Sciences Laboratory. *Pacific Decadal Oscillation (PDO)*.")
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Archivo: {source_name}")
